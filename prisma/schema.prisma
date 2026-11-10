@@ -1,0 +1,214 @@
+// ============================================================
+// SiNilai — Prisma schema (multi-tenant, shared DB + shared schema)
+// Semua tabel data sekolah punya schoolId → isolasi antar sekolah.
+// ADMIN bersifat global (schoolId = null), GURU terikat 1 sekolah.
+// ============================================================
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  GURU
+}
+
+enum Semester {
+  GANJIL
+  GENAP
+}
+
+enum Gender {
+  LAKI_LAKI
+  PEREMPUAN
+}
+
+enum StudentStatus {
+  ACTIVE      // Aktif
+  GRADUATED   // Lulus
+  MOVED_OUT   // Pindah
+}
+
+enum FieldEntity {
+  STUDENT
+  SCORE
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  SELECT
+  BOOLEAN
+}
+
+model School {
+  id            String   @id @default(cuid())
+  name          String
+  npsn          String?  @unique
+  jenjang       String?  // SD / SMP / SMA / SMK
+  address       String?
+  city          String?
+  passingGrade  Float    @default(75) // KKM default sekolah
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  users          User[]
+  academicYears  AcademicYear[]
+  classes        ClassRoom[]
+  students       Student[]
+  assignments    TeachingAssignment[]
+  fieldDefs      FieldDefinition[]
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         Role      @default(GURU)
+  isActive     Boolean   @default(true)
+  schoolId     String?   // null = ADMIN global
+  school       School?   @relation(fields: [schoolId], references: [id], onDelete: SetNull)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  assignments  TeachingAssignment[]
+
+  @@index([schoolId])
+}
+
+model AcademicYear {
+  id         String   @id @default(cuid())
+  schoolId   String
+  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  year       String   // "2026/2027"
+  semester   Semester
+  isActive   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  assignments TeachingAssignment[]
+
+  @@unique([schoolId, year, semester])
+  @@index([schoolId, isActive])
+}
+
+model ClassRoom {
+  id         String  @id @default(cuid())
+  schoolId   String
+  school     School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  name       String  // "XI IPA 1"
+  gradeLevel String? // "X" | "XI" | "XII" (bebas, fleksibel)
+  createdAt  DateTime @default(now())
+
+  students   Student[]
+  assignments TeachingAssignment[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model Subject {
+  id        String  @id @default(cuid())
+  code      String  @unique
+  name      String
+  isCustom  Boolean @default(false)
+
+  assignments TeachingAssignment[]
+}
+
+model Student {
+  id          String        @id @default(cuid())
+  schoolId    String
+  school      School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classRoomId String?
+  classRoom   ClassRoom?    @relation(fields: [classRoomId], references: [id], onDelete: SetNull)
+  nis         String
+  nisn        String?
+  name        String
+  gender      Gender?
+  birthPlace  String?
+  birthDate   DateTime?
+  status      StudentStatus @default(ACTIVE)
+  angkatan    String?       // tahun masuk, mis. "2024"
+  extra       Json          @default("{}") // biodata tambahan (lihat FieldDefinition)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  scores      Score[]
+
+  @@unique([schoolId, nis])
+  @@index([schoolId, classRoomId])
+  @@index([schoolId, name])
+}
+
+model TeachingAssignment {
+  id             String       @id @default(cuid())
+  schoolId       String
+  school         School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  teacherId      String
+  teacher        User         @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  classRoomId    String
+  classRoom      ClassRoom    @relation(fields: [classRoomId], references: [id], onDelete: Cascade)
+  subjectId      String
+  subject        Subject      @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  components     Component[]
+
+  @@unique([classRoomId, subjectId, academicYearId])
+  @@index([schoolId, teacherId])
+}
+
+model Component {
+  id           String             @id @default(cuid())
+  assignmentId String
+  assignment   TeachingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  name         String             // "Tugas 1", "PTS", "PAS", dll — bebas
+  weight       Float              @default(1)
+  order        Int                @default(0)
+  extra        Json               @default("{}")
+
+  scores       Score[]
+
+  @@index([assignmentId, order])
+}
+
+model Score {
+  id          String    @id @default(cuid())
+  componentId String
+  component   Component @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  value       Float?    // 0–100, null = belum diisi
+  extra       Json      @default("{}") // atribut nilai tambahan (predikat, deskripsi, dst.)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([componentId, studentId])
+  @@index([studentId])
+}
+
+model FieldDefinition {
+  id        String      @id @default(cuid())
+  schoolId  String?     // null = global (berlaku semua sekolah)
+  school    School?     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  entity    FieldEntity
+  key       String      // dipakai sebagai key di JSON `extra`, mis. "namaAyah"
+  label     String      // ditampilkan ke user, mis. "Nama Ayah"
+  type      FieldType   @default(TEXT)
+  options   Json?       // untuk SELECT: ["Ya","Tidak"]
+  required  Boolean     @default(false)
+  order     Int         @default(0)
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+
+  @@unique([schoolId, entity, key])
+}
